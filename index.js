@@ -321,7 +321,7 @@ app.post('/api/payments/create', auth, async (req, res) => {
         phoneNumber: normalizedPhone
       },
       merchantReference: payment._id.toString(),
-      callbackUrl: `${process.env.BACKEND_URL || 'https://backend-topaz-nine-29.vercel.app'}/api/payments/callback`,
+      callbackUrl: `${process.env.BACKEND_URL || 'https://ethanbackend.vercel.app'}/api/payments/callback`,
       returnUrl: `${process.env.FRONTEND_URL || 'https://ethane-chi.vercel.app'}/?payment=success&depositId={depositId}`
     }
     
