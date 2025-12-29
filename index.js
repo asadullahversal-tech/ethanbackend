@@ -287,25 +287,29 @@ const PAWAPAY_API_TOKEN = process.env.PAWAPAY_API_TOKEN || "eyJraWQiOiIxIiwiYWxn
 const PAWAPAY_API_URL = process.env.PAWAPAY_API_URL || "https://api.pawapay.io/v2" // PRODUCTION API v2
 
 // Map frontend provider names to PawaPay provider codes
+// According to PawaPay API documentation for COD (Congo):
+// - Vodacom → VODACOM_MPESA_COD
+// - Airtel → AIRTEL_COD
+// - Orange → ORANGE_COD
 function mapProviderToPawaPay(provider, country) {
   const countryCode = country?.toLowerCase() || ''
   const isCOD = countryCode.includes('congo') || countryCode.includes('rdc') || countryCode.includes('cod')
   
   if (isCOD) {
     switch (provider?.toLowerCase()) {
-      case 'mtn':
-        return 'MTN_MPESA_COD'
-      case 'airtel':
-        return 'AIRTEL_MONEY_COD'
       case 'vodacom':
         return 'VODACOM_MPESA_COD'
+      case 'airtel':
+        return 'AIRTEL_COD'
+      case 'orange':
+        return 'ORANGE_COD'
       default:
         return 'VODACOM_MPESA_COD' // Default for COD
     }
   }
   
-  // For other countries, use MTN as default
-  return 'MTN_MPESA_COD'
+  // For other countries, default to Vodacom
+  return 'VODACOM_MPESA_COD'
 }
 
 // Create payment request
