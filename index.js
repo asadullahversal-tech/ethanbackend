@@ -281,76 +281,98 @@ app.post('/api/cv', auth, async (req, res) => {
   return res.json({ cv })
 })
 
-// PawaPay API configuration
-const PAWAPAY_API_TOKEN = process.env.PAWAPAY_API_TOKEN || "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNDc2NzU0LCJpYXQiOjE3NjY5NDM5NTQsInBtIjoiREFGLFBBRiIsImp0aSI6Ijc5YzM2YjM5LWI2YzItNDA5Zi1hY2I2LTM3OWNjYjI1NjYxMSJ9.OdziB-hTpzsUqRVctNf4EPFqfTyWYBAnR7yYr3MgKFYdY6qZqHMYd23yZyDTzT0qMLA7QwVVxsESAqoLGnGX6Q"
-const PAWAPAY_API_URL = "https://api.sandbox.pawapay.io" // Use sandbox for testing
+// PawaPay API configuration - PRODUCTION
+const PAWAPAY_API_TOKEN = process.env.PAWAPAY_API_TOKEN || "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNTUzNjA5LCJpYXQiOjE3NjcwMjA4MDksInBtIjoiREFGLFBBRiIsImp0aSI6ImJjZDEwNjViLWI2N2EtNGZlMi04OTBmLTQ0NjI5ZTRlZTAyMiJ9.VjBkfAQilr332UntoyyK_3IRvyWwqdQ1f3W7jJJ91bauSyvA3V7X5VBVqDK8fvZYX9Byggwh2Pkqk7Q8EyKipg"
+const PAWAPAY_API_URL = process.env.PAWAPAY_API_URL || "https://api.pawapay.io/v2" // PRODUCTION API v2
+
+// Map frontend provider names to PawaPay provider codes
+function mapProviderToPawaPay(provider, country) {
+  const countryCode = country?.toLowerCase() || ''
+  const isCOD = countryCode.includes('congo') || countryCode.includes('rdc') || countryCode.includes('cod')
+  
+  if (isCOD) {
+    switch (provider?.toLowerCase()) {
+      case 'mtn':
+        return 'MTN_MPESA_COD'
+      case 'airtel':
+        return 'AIRTEL_MONEY_COD'
+      case 'vodacom':
+        return 'VODACOM_MPESA_COD'
+      default:
+        return 'VODACOM_MPESA_COD' // Default for COD
+    }
+  }
+  
+  // For other countries, use MTN as default
+  return 'MTN_MPESA_COD'
+}
 
 // Create payment request
 app.post('/api/payments/create', auth, async (req, res) => {
-  const { plan, amount, phone, provider } = req.body || {}
+  const { plan, amount, phone, provider, country, currency = 'USD' } = req.body || {}
   
   if (!plan || !amount || !phone) {
     return res.status(400).json({ error: 'Plan, amount, and phone are required' })
   }
 
   try {
+    // Generate unique deposit ID (UUID format)
+    const depositId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}`
+    
     // Create payment record
     const payment = await Payment.create({
       userId: req.user.sub,
       plan,
       amount,
-      currency: 'USD',
+      currency: currency || 'USD',
       phone,
       provider: provider || 'mtn',
+      depositId,
       status: 'pending'
     })
 
-    // Normalize phone number to MSISDN format (remove spaces, ensure + prefix)
-    let normalizedPhone = phone.replace(/\s+/g, '').trim()
-    if (!normalizedPhone.startsWith('+')) {
-      normalizedPhone = '+' + normalizedPhone
-    }
+    // Normalize phone number (remove spaces, remove + prefix for PawaPay)
+    let normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+/, '').trim()
     
-    // Prepare PawaPay request payload
+    // Map provider to PawaPay format
+    const pawapayProvider = mapProviderToPawaPay(provider || 'mtn', country)
+    
+    // Determine currency and country from amount/plan
+    // For COD (Congo), use CDF, otherwise USD
+    const isCOD = country?.toLowerCase().includes('congo') || country?.toLowerCase().includes('rdc')
+    const finalCurrency = isCOD ? 'CDF' : (currency || 'USD')
+    
+    // Prepare PawaPay v2 API request payload
     const pawapayPayload = {
-      amount: {
-        amount: amount.toString(),
-        currency: 'USD'
+      depositId: depositId,
+      payer: {
+        type: 'MMO',
+        accountDetails: {
+          phoneNumber: normalizedPhone,
+          provider: pawapayProvider
+        }
       },
-      customer: {
-        phoneNumber: normalizedPhone
-      },
-      merchantReference: payment._id.toString(),
-      callbackUrl: `${process.env.BACKEND_URL || 'https://ethanbackend.vercel.app'}/api/payments/callback`,
-      returnUrl: `${process.env.FRONTEND_URL || 'https://ethane-chi.vercel.app'}/?payment=success&depositId={depositId}`
+      amount: amount.toString(),
+      currency: finalCurrency,
+      clientReferenceId: `CV-${plan}-${payment._id}`,
+      customerMessage: `Payment for ${plan} plan - CV creation`
     }
     
-    // Add email if available
-    if (req.user.email) {
-      pawapayPayload.customer.email = req.user.email
-    }
-    
-    // Log request details (without full token for security)
-    console.log('[PawaPay] Request:', {
+    console.log('[PawaPay] Creating deposit:', {
       url: `${PAWAPAY_API_URL}/deposits`,
-      payload: pawapayPayload,
-      tokenPrefix: PAWAPAY_API_TOKEN.substring(0, 20) + '...',
-      tokenLength: PAWAPAY_API_TOKEN.length
+      payload: pawapayPayload
     })
     
-    // Call PawaPay API to create payment
-    // Note: Make sure the token is valid and has proper permissions in PawaPay dashboard
+    // Call PawaPay v2 API to create payment
     const pawapayResponse = await fetch(`${PAWAPAY_API_URL}/deposits`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${PAWAPAY_API_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(pawapayPayload)
     })
     
-    // Log response status immediately
     console.log('[PawaPay] Response Status:', pawapayResponse.status, pawapayResponse.statusText)
 
     if (!pawapayResponse.ok) {
@@ -367,9 +389,7 @@ app.post('/api/payments/create', auth, async (req, res) => {
         status: pawapayResponse.status,
         statusText: pawapayResponse.statusText,
         errorData,
-        errorText,
-        url: `${PAWAPAY_API_URL}/deposits`,
-        headers: Object.fromEntries(pawapayResponse.headers.entries())
+        errorText
       })
       
       await Payment.findByIdAndUpdate(payment._id, { status: 'failed' })
@@ -388,17 +408,21 @@ app.post('/api/payments/create', auth, async (req, res) => {
 
     const pawapayData = await pawapayResponse.json()
     
-    // Update payment with deposit ID
+    // Update payment with deposit ID and status
+    const initialStatus = pawapayData.status === 'ACCEPTED' ? 'processing' : 
+                         pawapayData.status === 'FAILED' ? 'failed' : 'pending'
+    
     await Payment.findByIdAndUpdate(payment._id, {
-      depositId: pawapayData.depositId,
-      reference: pawapayData.merchantReference
+      depositId: pawapayData.depositId || depositId,
+      status: initialStatus,
+      reference: pawapayData.depositId || depositId
     })
 
     return res.json({
       paymentId: payment._id,
-      depositId: pawapayData.depositId,
-      redirectUrl: pawapayData.redirectUrl || pawapayData.paymentUrl,
-      status: 'pending'
+      depositId: pawapayData.depositId || depositId,
+      status: initialStatus,
+      nextStep: pawapayData.nextStep || 'FINAL_STATUS'
     })
   } catch (err) {
     console.error('[Payment] Error:', err)
@@ -406,12 +430,12 @@ app.post('/api/payments/create', auth, async (req, res) => {
   }
 })
 
-// Verify payment status
+// Verify payment status - polls PawaPay API
 app.get('/api/payments/status/:depositId', auth, async (req, res) => {
   const { depositId } = req.params
   
   try {
-    // Check PawaPay API for payment status
+    // Check PawaPay v2 API for payment status
     const pawapayResponse = await fetch(`${PAWAPAY_API_URL}/deposits/${depositId}`, {
       method: 'GET',
       headers: {
@@ -424,15 +448,25 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
       return res.status(404).json({ error: 'Payment not found' })
     }
 
-    const pawapayData = await pawapayResponse.json()
+    const pawapayResponseData = await pawapayResponse.json()
+    const pawapayData = pawapayResponseData.data || pawapayResponseData
+    
+    // Map PawaPay status to our status
+    let paymentStatus = 'pending'
+    if (pawapayData.status === 'COMPLETED' || pawapayData.status === 'ACCEPTED') {
+      paymentStatus = 'completed'
+    } else if (pawapayData.status === 'FAILED') {
+      paymentStatus = 'failed'
+    } else if (pawapayData.status === 'PROCESSING') {
+      paymentStatus = 'processing'
+    }
     
     // Update payment status in database
     const payment = await Payment.findOneAndUpdate(
       { depositId, userId: req.user.sub },
       {
-        status: pawapayData.status === 'COMPLETED' ? 'completed' : 
-                pawapayData.status === 'FAILED' ? 'failed' : 'pending',
-        paidAt: pawapayData.status === 'COMPLETED' ? new Date() : undefined
+        status: paymentStatus,
+        paidAt: paymentStatus === 'completed' ? new Date() : undefined
       },
       { new: true }
     )
@@ -447,7 +481,9 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
       status: payment.status,
       plan: payment.plan,
       amount: payment.amount,
-      paidAt: payment.paidAt
+      paidAt: payment.paidAt,
+      pawapayStatus: pawapayData.status,
+      failureReason: pawapayData.failureReason || null
     })
   } catch (err) {
     console.error('[Payment Status] Error:', err)
