@@ -345,6 +345,12 @@ app.post('/api/payments/create', auth, async (req, res) => {
     const finalCurrency = isCOD ? 'CDF' : (currency || 'USD')
     
     // Prepare PawaPay v2 API request payload
+    // Customer message must be max 22 characters
+    const customerMessage = plan === 'student' ? 'CV Student Plan' :
+                           plan === 'professional' ? 'CV Pro Plan' :
+                           plan === 'advanced' ? 'CV Advanced Plan' :
+                           'CV Payment'
+    
     const pawapayPayload = {
       depositId: depositId,
       payer: {
@@ -357,7 +363,7 @@ app.post('/api/payments/create', auth, async (req, res) => {
       amount: amount.toString(),
       currency: finalCurrency,
       clientReferenceId: `CV-${plan}-${payment._id}`,
-      customerMessage: `Payment for ${plan} plan - CV creation`
+      customerMessage: customerMessage.substring(0, 22) // Ensure max 22 characters
     }
     
     console.log('[PawaPay] Creating deposit:', {
