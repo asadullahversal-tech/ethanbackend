@@ -4,6 +4,7 @@ const dotenv = require('dotenv')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const mongoose = require('mongoose')
+const { randomUUID } = require('crypto')
 
 dotenv.config()
 
@@ -316,8 +317,9 @@ app.post('/api/payments/create', auth, async (req, res) => {
   }
 
   try {
-    // Generate unique deposit ID (UUID format)
-    const depositId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}-${Math.random().toString(36).substring(2, 15)}`
+    // Generate unique deposit ID (UUID v4 format - exactly 36 characters)
+    // Using crypto.randomUUID() for proper UUID v4 generation
+    const depositId = randomUUID()
     
     // Create payment record
     const payment = await Payment.create({
