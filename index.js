@@ -337,16 +337,33 @@ app.post('/api/payments/create', auth, async (req, res) => {
       status: 'pending'
     })
 
-    // Normalize phone number (remove spaces, remove + prefix for PawaPay)
+    // Normalize phone number for PawaPay
+    // PawaPay expects: country code + number without + prefix (e.g., "243998138612" for Congo)
     let normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+/, '').trim()
+    
+    // Validate phone number format for Congo (should start with 243 and be 12 digits total)
+    if (normalizedPhone.length < 9 || normalizedPhone.length > 15) {
+      return res.status(400).json({ 
+        error: 'Invalid phone number format',
+        message: 'Phone number must be between 9 and 15 digits (e.g., 243998138612)'
+      })
+    }
     
     // Map provider to PawaPay format
     const pawapayProvider = mapProviderToPawaPay(provider || 'mtn', country)
     
     // Determine currency and country from amount/plan
     // For COD (Congo), use CDF, otherwise USD
-    const isCOD = country?.toLowerCase().includes('congo') || country?.toLowerCase().includes('rdc')
+    const isCOD = country?.toLowerCase().includes('congo') || country?.toLowerCase().includes('rdc') || country?.toLowerCase().includes('cod')
     const finalCurrency = isCOD ? 'CDF' : (currency || 'USD')
+    
+    // Validate amount - must be positive number
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid amount',
+        message: 'Amount must be a positive number'
+      })
+    }
     
     // Prepare PawaPay v2 API request payload
     // Customer message must be max 22 characters
@@ -370,9 +387,18 @@ app.post('/api/payments/create', auth, async (req, res) => {
       customerMessage: customerMessage.substring(0, 22) // Ensure max 22 characters
     }
     
-    console.log('[PawaPay] Creating deposit:', {
+    console.log('[PawaPay] Creating deposit request:', {
       url: `${PAWAPAY_API_URL}/deposits`,
-      payload: pawapayPayload
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${PAWAPAY_API_TOKEN.substring(0, 20)}...`,
+        'Content-Type': 'application/json'
+      },
+      payload: JSON.stringify(pawapayPayload, null, 2),
+      phoneNumber: normalizedPhone,
+      provider: pawapayProvider,
+      amount: amount.toString(),
+      currency: finalCurrency
     })
     
     // Call PawaPay v2 API to create payment
@@ -420,7 +446,17 @@ app.post('/api/payments/create', auth, async (req, res) => {
 
     const pawapayData = await pawapayResponse.json()
     
+    console.log('[PawaPay] Deposit created successfully:', {
+      depositId: pawapayData.depositId,
+      status: pawapayData.status,
+      nextStep: pawapayData.nextStep,
+      created: pawapayData.created,
+      fullResponse: JSON.stringify(pawapayData, null, 2)
+    })
+    
     // Update payment with deposit ID and status
+    // ACCEPTED means payment was successfully initiated and user should receive prompt
+    // Other statuses: PENDING, PROCESSING, COMPLETED, FAILED
     const initialStatus = pawapayData.status === 'ACCEPTED' ? 'processing' : 
                          pawapayData.status === 'FAILED' ? 'failed' : 'pending'
     
@@ -430,11 +466,22 @@ app.post('/api/payments/create', auth, async (req, res) => {
       reference: pawapayData.depositId || depositId
     })
 
+    // Log important info for debugging
+    if (pawapayData.status === 'ACCEPTED') {
+      console.log('[PawaPay] ✅ Payment initiated successfully. User should receive mobile authorization prompt on:', normalizedPhone)
+    } else {
+      console.log('[PawaPay] ⚠️ Payment status:', pawapayData.status, '- User may not receive prompt yet')
+    }
+
     return res.json({
       paymentId: payment._id,
       depositId: pawapayData.depositId || depositId,
       status: initialStatus,
-      nextStep: pawapayData.nextStep || 'FINAL_STATUS'
+      nextStep: pawapayData.nextStep || 'FINAL_STATUS',
+      pawapayStatus: pawapayData.status,
+      message: pawapayData.status === 'ACCEPTED' 
+        ? 'Payment initiated. Please check your mobile phone for an authorization prompt (USSD or SMS).'
+        : 'Payment request received. Status: ' + pawapayData.status
     })
   } catch (err) {
     console.error('[Payment] Error:', err)
@@ -447,6 +494,8 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
   const { depositId } = req.params
   
   try {
+    console.log('[PawaPay] Checking status for depositId:', depositId)
+    
     // Check PawaPay v2 API for payment status
     const pawapayResponse = await fetch(`${PAWAPAY_API_URL}/deposits/${depositId}`, {
       method: 'GET',
@@ -456,12 +505,45 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
       }
     })
 
+    console.log('[PawaPay] Status check response:', {
+      status: pawapayResponse.status,
+      statusText: pawapayResponse.statusText
+    })
+
     if (!pawapayResponse.ok) {
-      return res.status(404).json({ error: 'Payment not found' })
+      const errorText = await pawapayResponse.text()
+      console.error('[PawaPay] Status check failed:', {
+        status: pawapayResponse.status,
+        error: errorText
+      })
+      
+      // If 404, the deposit might not exist yet (NOT_FOUND)
+      if (pawapayResponse.status === 404) {
+        return res.json({
+          status: 'pending',
+          pawapayStatus: 'NOT_FOUND',
+          message: 'Payment request is being processed. Please check your mobile phone for an authorization prompt.'
+        })
+      }
+      
+      return res.status(pawapayResponse.status).json({ 
+        error: 'Payment status check failed',
+        status: 'pending',
+        pawapayStatus: 'ERROR'
+      })
     }
 
     const pawapayResponseData = await pawapayResponse.json()
     const pawapayData = pawapayResponseData.data || pawapayResponseData
+    
+    console.log('[PawaPay] Status data received:', {
+      depositId: pawapayData.depositId,
+      status: pawapayData.status,
+      amount: pawapayData.amount,
+      currency: pawapayData.currency,
+      payer: pawapayData.payer,
+      failureReason: pawapayData.failureReason
+    })
     
     // Map PawaPay status to our status
     let paymentStatus = 'pending'
