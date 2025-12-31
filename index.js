@@ -364,7 +364,18 @@ app.post('/api/payments/create', auth, async (req, res) => {
     let pawapayProvider = 'VODACOM_MPESA_COD' // Default provider
     
     if (phone) {
-      normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+/, '').trim()
+      // Robust phone normalization: remove all non-digit characters except keep digits only
+      // Remove spaces, dashes, plus signs, parentheses, and any other characters
+      // PawaPay expects phone number without + prefix
+      normalizedPhone = phone.toString().replace(/[^\d]/g, '').trim()
+      
+      // Log original and normalized phone for debugging
+      console.log('[Payment] Phone normalization:', {
+        original: phone,
+        normalized: normalizedPhone,
+        length: normalizedPhone.length
+      })
+      
       // Map provider to PawaPay format if provided
       if (provider) {
         pawapayProvider = mapProviderToPawaPay(provider, country)
@@ -383,14 +394,43 @@ app.post('/api/payments/create', auth, async (req, res) => {
     }
     
     // Add payer - required parameter
+    // Validate phone number format for Congo (COD): should start with 243 and be 9-12 digits total
     if (normalizedPhone && normalizedPhone.length >= 9) {
+      // For Congo numbers, ensure proper format (243XXXXXXXXX)
+      // If phone starts with 243, it's already correct
+      // If phone doesn't start with 243 but is 9 digits, it might be missing country code
+      let finalPhoneNumber = normalizedPhone
+      
+      // If it's a Congo number (country is COD) and doesn't start with 243, add it
+      if (isCOD && normalizedPhone.length === 9 && !normalizedPhone.startsWith('243')) {
+        finalPhoneNumber = `243${normalizedPhone}`
+        console.log('[Payment] Added country code to phone:', {
+          original: normalizedPhone,
+          final: finalPhoneNumber
+        })
+      }
+      
+      // Validate final phone number length (should be 9-12 digits for Congo)
+      if (finalPhoneNumber.length < 9 || finalPhoneNumber.length > 12) {
+        console.warn('[Payment] Phone number length may be invalid:', {
+          phone: finalPhoneNumber,
+          length: finalPhoneNumber.length
+        })
+      }
+      
       pawapayPayload.payer = {
         type: 'MMO',
         accountDetails: {
-          phoneNumber: normalizedPhone,
+          phoneNumber: finalPhoneNumber,
           provider: pawapayProvider
         }
       }
+      
+      console.log('[Payment] Payer object:', {
+        type: 'MMO',
+        phoneNumber: finalPhoneNumber,
+        provider: pawapayProvider
+      })
     } else {
       // If no phone provided, PawaPay Payment Page will let user enter it
       // But we still need to provide payer structure (can be empty or with type only)
@@ -398,6 +438,8 @@ app.post('/api/payments/create', auth, async (req, res) => {
         type: 'MMO'
         // accountDetails will be filled by user on Payment Page
       }
+      
+      console.warn('[Payment] No valid phone number provided, payer.accountDetails will be empty')
     }
     
     console.log('[PawaPay] Creating deposit:', {
