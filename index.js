@@ -588,6 +588,19 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
 // PawaPay webhook callback
 // This endpoint receives notifications from PawaPay when payment status changes
 // Configure this URL in PawaPay Dashboard: System Configuration > Callback URLs
+
+// GET endpoint for callback URL verification (PawaPay may test with GET)
+app.get('/api/payments/callback', async (req, res) => {
+  return res.json({ 
+    success: true,
+    message: 'PawaPay callback endpoint is active',
+    endpoint: '/api/payments/callback',
+    method: 'POST',
+    note: 'This endpoint accepts POST requests from PawaPay webhooks'
+  })
+})
+
+// POST endpoint for actual webhook callbacks from PawaPay
 app.post('/api/payments/callback', async (req, res) => {
   console.log('[PawaPay Callback] Received webhook:', {
     body: req.body,
