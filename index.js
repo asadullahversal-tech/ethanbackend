@@ -312,45 +312,22 @@ function mapProviderToPawaPay(provider, country) {
   return 'VODACOM_MPESA_COD'
 }
 
-// Create payment request
+// Create payment request - Stripe-like redirect flow using PawaPay Payment Page
 app.post('/api/payments/create', auth, async (req, res) => {
-  const { plan, amount, phone, provider, country, currency = 'USD' } = req.body || {}
+  const { plan, amount, phone, provider, country, currency = 'USD', returnUrl } = req.body || {}
   
-  if (!plan || !amount || !phone) {
-    return res.status(400).json({ error: 'Plan, amount, and phone are required' })
+  if (!plan || !amount) {
+    return res.status(400).json({ error: 'Plan and amount are required' })
+  }
+  
+  // returnUrl is required for Payment Page flow
+  if (!returnUrl) {
+    return res.status(400).json({ error: 'returnUrl is required for payment page flow' })
   }
 
   try {
     // Generate unique deposit ID (UUID v4 format - exactly 36 characters)
-    // Using crypto.randomUUID() for proper UUID v4 generation
     const depositId = randomUUID()
-    
-    // Create payment record
-    const payment = await Payment.create({
-      userId: req.user.sub,
-      plan,
-      amount,
-      currency: currency || 'USD',
-      phone,
-      provider: provider || 'mtn',
-      depositId,
-      status: 'pending'
-    })
-
-    // Normalize phone number for PawaPay
-    // PawaPay expects: country code + number without + prefix (e.g., "243998138612" for Congo)
-    let normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+/, '').trim()
-    
-    // Validate phone number format for Congo (should start with 243 and be 12 digits total)
-    if (normalizedPhone.length < 9 || normalizedPhone.length > 15) {
-      return res.status(400).json({ 
-        error: 'Invalid phone number format',
-        message: 'Phone number must be between 9 and 15 digits (e.g., 243998138612)'
-      })
-    }
-    
-    // Map provider to PawaPay format
-    const pawapayProvider = mapProviderToPawaPay(provider || 'mtn', country)
     
     // Determine currency and country from amount/plan
     // For COD (Congo), use CDF, otherwise USD
@@ -365,43 +342,51 @@ app.post('/api/payments/create', auth, async (req, res) => {
       })
     }
     
-    // Prepare PawaPay v2 API request payload
+    // Create payment record
+    const payment = await Payment.create({
+      userId: req.user.sub,
+      plan,
+      amount,
+      currency: finalCurrency,
+      phone: phone || '',
+      provider: provider || 'vodacom',
+      depositId,
+      status: 'pending'
+    })
+    
+    // Prepare PawaPay Payment Page API request payload
     // Customer message must be max 22 characters
     const customerMessage = plan === 'student' ? 'CV Student Plan' :
                            plan === 'professional' ? 'CV Pro Plan' :
                            plan === 'advanced' ? 'CV Advanced Plan' :
                            'CV Payment'
     
+    // Get callback URL for webhooks
+    const callbackUrl = `${req.protocol}://${req.get('host')}/api/payments/callback`
+    
+    // PawaPay Payment Page API payload
+    // This creates a payment session and returns a redirectUrl for the user
     const pawapayPayload = {
       depositId: depositId,
-      payer: {
-        type: 'MMO',
-        accountDetails: {
-          phoneNumber: normalizedPhone,
-          provider: pawapayProvider
-        }
-      },
       amount: amount.toString(),
       currency: finalCurrency,
       clientReferenceId: `CV-${plan}-${payment._id}`,
-      customerMessage: customerMessage.substring(0, 22) // Ensure max 22 characters
+      customerMessage: customerMessage.substring(0, 22),
+      returnUrl: returnUrl, // Where to redirect user after payment
+      callbackUrl: callbackUrl // Where PawaPay sends webhook notifications
     }
     
-    console.log('[PawaPay] Creating deposit request:', {
+    console.log('[PawaPay] Creating Payment Page session:', {
       url: `${PAWAPAY_API_URL}/deposits`,
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${PAWAPAY_API_TOKEN.substring(0, 20)}...`,
-        'Content-Type': 'application/json'
-      },
       payload: JSON.stringify(pawapayPayload, null, 2),
-      phoneNumber: normalizedPhone,
-      provider: pawapayProvider,
-      amount: amount.toString(),
-      currency: finalCurrency
+      returnUrl: returnUrl,
+      callbackUrl: callbackUrl
     })
     
-    // Call PawaPay v2 API to create payment
+    // Call PawaPay API to create payment with Payment Page flow
+    // Adding returnUrl and callbackUrl enables Payment Page mode
+    // This returns a redirectUrl that the user should be sent to
     const pawapayResponse = await fetch(`${PAWAPAY_API_URL}/deposits`, {
       method: 'POST',
       headers: {
@@ -446,42 +431,42 @@ app.post('/api/payments/create', auth, async (req, res) => {
 
     const pawapayData = await pawapayResponse.json()
     
-    console.log('[PawaPay] Deposit created successfully:', {
-      depositId: pawapayData.depositId,
+    console.log('[PawaPay] Payment Page session created:', {
+      depositId: pawapayData.depositId || depositId,
+      redirectUrl: pawapayData.redirectUrl,
       status: pawapayData.status,
-      nextStep: pawapayData.nextStep,
-      created: pawapayData.created,
       fullResponse: JSON.stringify(pawapayData, null, 2)
     })
     
-    // Update payment with deposit ID and status
-    // ACCEPTED means payment was successfully initiated and user should receive prompt
-    // Other statuses: PENDING, PROCESSING, COMPLETED, FAILED
-    const initialStatus = pawapayData.status === 'ACCEPTED' ? 'processing' : 
-                         pawapayData.status === 'FAILED' ? 'failed' : 'pending'
+    // Payment Page API returns a redirectUrl that user should be redirected to
+    const redirectUrl = pawapayData.redirectUrl || pawapayData.url
     
+    if (!redirectUrl) {
+      console.error('[PawaPay] No redirectUrl in response:', pawapayData)
+      await Payment.findByIdAndUpdate(payment._id, { status: 'failed' })
+      return res.status(500).json({ 
+        error: 'Payment page creation failed',
+        message: 'No redirect URL received from PawaPay',
+        details: pawapayData
+      })
+    }
+    
+    // Update payment with deposit ID
     await Payment.findByIdAndUpdate(payment._id, {
       depositId: pawapayData.depositId || depositId,
-      status: initialStatus,
+      status: 'pending', // Will be updated via webhook
       reference: pawapayData.depositId || depositId
     })
 
-    // Log important info for debugging
-    if (pawapayData.status === 'ACCEPTED') {
-      console.log('[PawaPay] ✅ Payment initiated successfully. User should receive mobile authorization prompt on:', normalizedPhone)
-    } else {
-      console.log('[PawaPay] ⚠️ Payment status:', pawapayData.status, '- User may not receive prompt yet')
-    }
+    console.log('[PawaPay] ✅ Payment Page session created. Redirect user to:', redirectUrl)
 
+    // Return redirectUrl to frontend (like Stripe checkout)
     return res.json({
       paymentId: payment._id,
       depositId: pawapayData.depositId || depositId,
-      status: initialStatus,
-      nextStep: pawapayData.nextStep || 'FINAL_STATUS',
-      pawapayStatus: pawapayData.status,
-      message: pawapayData.status === 'ACCEPTED' 
-        ? 'Payment initiated. Please check your mobile phone for an authorization prompt (USSD or SMS).'
-        : 'Payment request received. Status: ' + pawapayData.status
+      redirectUrl: redirectUrl, // Frontend will redirect user to this URL
+      status: 'pending',
+      message: 'Redirecting to payment page...'
     })
   } catch (err) {
     console.error('[Payment] Error:', err)
