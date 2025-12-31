@@ -364,8 +364,21 @@ app.post('/api/payments/create', auth, async (req, res) => {
     // Get callback URL for webhooks
     const callbackUrl = `${req.protocol}://${req.get('host')}/api/payments/callback`
     
+    // Normalize phone number if provided (optional for Payment Page, user can enter on PawaPay page)
+    let normalizedPhone = ''
+    let pawapayProvider = 'VODACOM_MPESA_COD' // Default provider
+    
+    if (phone) {
+      normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+/, '').trim()
+      // Map provider to PawaPay format if provided
+      if (provider) {
+        pawapayProvider = mapProviderToPawaPay(provider, country)
+      }
+    }
+    
     // PawaPay Payment Page API payload
-    // This creates a payment session and returns a redirectUrl for the user
+    // Note: payer is required even for Payment Page flow
+    // If phone/provider not provided, user will enter on PawaPay page
     const pawapayPayload = {
       depositId: depositId,
       amount: amount.toString(),
@@ -374,6 +387,24 @@ app.post('/api/payments/create', auth, async (req, res) => {
       customerMessage: customerMessage.substring(0, 22),
       returnUrl: returnUrl, // Where to redirect user after payment
       callbackUrl: callbackUrl // Where PawaPay sends webhook notifications
+    }
+    
+    // Add payer if phone number is provided (optional for Payment Page)
+    if (normalizedPhone && normalizedPhone.length >= 9) {
+      pawapayPayload.payer = {
+        type: 'MMO',
+        accountDetails: {
+          phoneNumber: normalizedPhone,
+          provider: pawapayProvider
+        }
+      }
+    } else {
+      // If no phone provided, PawaPay Payment Page will let user enter it
+      // But we still need to provide payer structure (can be empty or with type only)
+      pawapayPayload.payer = {
+        type: 'MMO'
+        // accountDetails will be filled by user on Payment Page
+      }
     }
     
     console.log('[PawaPay] Creating Payment Page session:', {
