@@ -10,6 +10,14 @@ https://ethanbackend.vercel.app/api/payments/callback
 
 **Note:** If your backend is deployed to a different Vercel URL, replace `ethanbackend.vercel.app` with your actual backend domain.
 
+### ✅ Verify the Callback URL is Working
+
+After deployment, you can verify the callback URL is accessible by visiting it in your browser:
+- **GET request**: `https://ethanbackend.vercel.app/api/payments/callback`
+- Should return: `{ "success": true, "message": "PawaPay callback endpoint is active", ... }`
+
+**Important:** The endpoint accepts both GET (for verification) and POST (for actual webhooks from PawaPay).
+
 ---
 
 ## 🔧 How to Configure in PawaPay Dashboard
