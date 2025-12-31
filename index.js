@@ -283,7 +283,7 @@ app.post('/api/cv', auth, async (req, res) => {
 })
 
 // PawaPay API configuration - PRODUCTION
-const PAWAPAY_API_TOKEN = process.env.PAWAPAY_API_TOKEN || "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNTUzNjA5LCJpYXQiOjE3NjcwMjA4MDksInBtIjoiREFGLFBBRiIsImp0aSI6ImJjZDEwNjViLWI2N2EtNGZlMi04OTBmLTQ0NjI5ZTRlZTAyMiJ9.VjBkfAQilr332UntoyyK_3IRvyWwqdQ1f3W7jJJ91bauSyvA3V7X5VBVqDK8fvZYX9Byggwh2Pkqk7Q8EyKipg"
+const PAWAPAY_API_TOKEN =  "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNTUzNjA5LCJpYXQiOjE3NjcwMjA4MDksInBtIjoiREFGLFBBRiIsImp0aSI6ImJjZDEwNjViLWI2N2EtNGZlMi04OTBmLTQ0NjI5ZTRlZTAyMiJ9.VjBkfAQilr332UntoyyK_3IRvyWwqdQ1f3W7jJJ91bauSyvA3V7X5VBVqDK8fvZYX9Byggwh2Pkqk7Q8EyKipg"
 const PAWAPAY_API_URL = process.env.PAWAPAY_API_URL || "https://api.pawapay.io/v2" // PRODUCTION API v2
 
 // Map frontend provider names to PawaPay provider codes
@@ -586,27 +586,78 @@ app.get('/api/payments/status/:depositId', auth, async (req, res) => {
 })
 
 // PawaPay webhook callback
+// This endpoint receives notifications from PawaPay when payment status changes
+// Configure this URL in PawaPay Dashboard: System Configuration > Callback URLs
 app.post('/api/payments/callback', async (req, res) => {
-  const { depositId, status, merchantReference } = req.body || {}
+  console.log('[PawaPay Callback] Received webhook:', {
+    body: req.body,
+    headers: req.headers,
+    timestamp: new Date().toISOString()
+  })
   
   try {
-    const payment = await Payment.findById(merchantReference)
+    // PawaPay sends webhook with deposit information
+    // Format: { data: { depositId, status, amount, currency, payer, failureReason, ... } }
+    const webhookData = req.body?.data || req.body
+    const depositId = webhookData?.depositId || req.body?.depositId
+    const status = webhookData?.status || req.body?.status
+    const failureReason = webhookData?.failureReason || req.body?.failureReason
+    
+    if (!depositId) {
+      console.error('[PawaPay Callback] Missing depositId in webhook')
+      return res.status(400).json({ error: 'Missing depositId' })
+    }
+    
+    // Find payment by depositId
+    const payment = await Payment.findOne({ depositId })
     if (!payment) {
-      return res.status(404).json({ error: 'Payment not found' })
+      console.error('[PawaPay Callback] Payment not found for depositId:', depositId)
+      // Still return 200 to prevent PawaPay from retrying
+      return res.json({ success: false, message: 'Payment not found' })
     }
 
-    const paymentStatus = status === 'COMPLETED' ? 'completed' : 
-                         status === 'FAILED' ? 'failed' : 'pending'
+    // Map PawaPay status to our status
+    let paymentStatus = 'pending'
+    if (status === 'COMPLETED') {
+      paymentStatus = 'completed'
+    } else if (status === 'FAILED') {
+      paymentStatus = 'failed'
+    } else if (status === 'PROCESSING' || status === 'ACCEPTED') {
+      paymentStatus = 'processing'
+    }
     
+    // Update payment status
     await Payment.findByIdAndUpdate(payment._id, {
       status: paymentStatus,
-      paidAt: paymentStatus === 'completed' ? new Date() : undefined
+      paidAt: paymentStatus === 'completed' ? new Date() : undefined,
+      reference: depositId
+    })
+    
+    console.log('[PawaPay Callback] ✅ Payment updated:', {
+      depositId,
+      paymentId: payment._id,
+      oldStatus: payment.status,
+      newStatus: paymentStatus,
+      pawapayStatus: status,
+      failureReason: failureReason?.failureMessage || null
     })
 
-    return res.json({ success: true })
+    // Always return 200 to acknowledge receipt
+    // PawaPay will retry if we return an error status
+    return res.json({ 
+      success: true,
+      depositId,
+      status: paymentStatus,
+      message: 'Callback processed successfully'
+    })
   } catch (err) {
-    console.error('[Payment Callback] Error:', err)
-    return res.status(500).json({ error: 'Callback processing failed' })
+    console.error('[PawaPay Callback] Error processing webhook:', err)
+    // Still return 200 to prevent infinite retries, but log the error
+    return res.status(200).json({ 
+      success: false, 
+      error: 'Callback processing failed',
+      message: err.message 
+    })
   }
 })
 
