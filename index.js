@@ -674,6 +674,15 @@ app.post('/api/payments/callback', async (req, res) => {
   }
 })
 
+// Health check endpoint
+app.get('/api/health', async (req, res) => {
+  return res.json({ 
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    message: 'Backend is running'
+  })
+})
+
 // Check if user has paid
 app.get('/api/payments/check/:plan', auth, async (req, res) => {
   const { plan } = req.params
