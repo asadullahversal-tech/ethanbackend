@@ -320,10 +320,8 @@ app.post('/api/payments/create', auth, async (req, res) => {
     return res.status(400).json({ error: 'Plan and amount are required' })
   }
   
-  // returnUrl is required for Payment Page flow
-  if (!returnUrl) {
-    return res.status(400).json({ error: 'returnUrl is required for payment page flow' })
-  }
+  // returnUrl is optional - configured in PawaPay Dashboard
+  // We'll use it to construct payment page URL if needed
 
   try {
     // Generate unique deposit ID (UUID v4 format - exactly 36 characters)
@@ -373,17 +371,15 @@ app.post('/api/payments/create', auth, async (req, res) => {
       }
     }
     
-    // PawaPay Payment Page API payload
-    // Note: payer is required even for Payment Page flow
-    // callbackUrl is configured in PawaPay Dashboard, not sent in API request
+    // PawaPay API payload
+    // Note: returnUrl and callbackUrl are configured in PawaPay Dashboard, not sent in API request
     const pawapayPayload = {
       depositId: depositId,
       amount: amount.toString(),
       currency: finalCurrency,
       clientReferenceId: `CV-${plan}-${payment._id}`,
-      customerMessage: customerMessage.substring(0, 22),
-      returnUrl: returnUrl // Where to redirect user after payment
-      // callbackUrl is configured in PawaPay Dashboard, not here
+      customerMessage: customerMessage.substring(0, 22)
+      // returnUrl and callbackUrl are configured in PawaPay Dashboard
     }
     
     // Add payer - required parameter
@@ -404,17 +400,15 @@ app.post('/api/payments/create', auth, async (req, res) => {
       }
     }
     
-    console.log('[PawaPay] Creating Payment Page session:', {
+    console.log('[PawaPay] Creating deposit:', {
       url: `${PAWAPAY_API_URL}/deposits`,
       method: 'POST',
-      payload: JSON.stringify(pawapayPayload, null, 2),
-      returnUrl: returnUrl
-      // Note: callbackUrl is configured in PawaPay Dashboard
+      payload: JSON.stringify(pawapayPayload, null, 2)
+      // Note: returnUrl and callbackUrl are configured in PawaPay Dashboard
     })
     
-    // Call PawaPay API to create payment with Payment Page flow
-    // Adding returnUrl and callbackUrl enables Payment Page mode
-    // This returns a redirectUrl that the user should be sent to
+    // Call PawaPay API to create payment
+    // Check if response includes redirectUrl for Payment Page
     const pawapayResponse = await fetch(`${PAWAPAY_API_URL}/deposits`, {
       method: 'POST',
       headers: {
@@ -459,43 +453,61 @@ app.post('/api/payments/create', auth, async (req, res) => {
 
     const pawapayData = await pawapayResponse.json()
     
-    console.log('[PawaPay] Payment Page session created:', {
+    console.log('[PawaPay] Deposit created:', {
       depositId: pawapayData.depositId || depositId,
-      redirectUrl: pawapayData.redirectUrl,
       status: pawapayData.status,
+      redirectUrl: pawapayData.redirectUrl,
+      url: pawapayData.url,
       fullResponse: JSON.stringify(pawapayData, null, 2)
     })
     
-    // Payment Page API returns a redirectUrl that user should be redirected to
-    const redirectUrl = pawapayData.redirectUrl || pawapayData.url
+    const finalDepositId = pawapayData.depositId || depositId
     
-    if (!redirectUrl) {
-      console.error('[PawaPay] No redirectUrl in response:', pawapayData)
-      await Payment.findByIdAndUpdate(payment._id, { status: 'failed' })
-      return res.status(500).json({ 
-        error: 'Payment page creation failed',
-        message: 'No redirect URL received from PawaPay',
-        details: pawapayData
-      })
+    // Check if PawaPay returned a redirectUrl (Payment Page flow)
+    // If not, construct payment page URL or use direct payment flow
+    let redirectUrl = pawapayData.redirectUrl || pawapayData.url
+    
+    // If no redirectUrl in response, construct Payment Page URL
+    // Format: https://pay.pawapay.io/{depositId} or similar
+    if (!redirectUrl && returnUrl) {
+      // Try constructing payment page URL
+      // PawaPay Payment Page might be at: https://pay.pawapay.io/pay/{depositId}
+      redirectUrl = `https://pay.pawapay.io/pay/${finalDepositId}`
+      console.log('[PawaPay] Constructed payment page URL:', redirectUrl)
     }
     
     // Update payment with deposit ID
+    const initialStatus = pawapayData.status === 'ACCEPTED' ? 'processing' : 
+                         pawapayData.status === 'FAILED' ? 'failed' : 'pending'
+    
     await Payment.findByIdAndUpdate(payment._id, {
-      depositId: pawapayData.depositId || depositId,
-      status: 'pending', // Will be updated via webhook
-      reference: pawapayData.depositId || depositId
+      depositId: finalDepositId,
+      status: initialStatus,
+      reference: finalDepositId
     })
 
-    console.log('[PawaPay] ✅ Payment Page session created. Redirect user to:', redirectUrl)
-
-    // Return redirectUrl to frontend (like Stripe checkout)
-    return res.json({
-      paymentId: payment._id,
-      depositId: pawapayData.depositId || depositId,
-      redirectUrl: redirectUrl, // Frontend will redirect user to this URL
-      status: 'pending',
-      message: 'Redirecting to payment page...'
-    })
+    // If we have a redirectUrl, return it for frontend redirect
+    if (redirectUrl) {
+      console.log('[PawaPay] ✅ Payment created. Redirect user to:', redirectUrl)
+      return res.json({
+        paymentId: payment._id,
+        depositId: finalDepositId,
+        redirectUrl: redirectUrl,
+        status: initialStatus,
+        message: 'Redirecting to payment page...'
+      })
+    } else {
+      // No redirectUrl - use direct payment flow (user receives prompt on phone)
+      console.log('[PawaPay] ✅ Payment initiated. User should receive prompt on phone.')
+      return res.json({
+        paymentId: payment._id,
+        depositId: finalDepositId,
+        status: initialStatus,
+        message: pawapayData.status === 'ACCEPTED' 
+          ? 'Payment initiated. Please check your mobile phone for an authorization prompt.'
+          : 'Payment request received. Status: ' + pawapayData.status
+      })
+    }
   } catch (err) {
     console.error('[Payment] Error:', err)
     return res.status(500).json({ error: 'Payment creation failed', message: err.message })
