@@ -453,14 +453,44 @@ app.post('/api/payments/create', auth, async (req, res) => {
 
     const pawapayData = await pawapayResponse.json()
     
-    console.log('[PawaPay] Deposit created:', {
+    console.log('[PawaPay] Deposit response:', {
       depositId: pawapayData.depositId || depositId,
       status: pawapayData.status,
       nextStep: pawapayData.nextStep,
+      failureReason: pawapayData.failureReason,
       fullResponse: JSON.stringify(pawapayData, null, 2)
     })
     
     const finalDepositId = pawapayData.depositId || depositId
+    
+    // Check if payment was rejected
+    if (pawapayData.status === 'REJECTED' || pawapayData.status === 'FAILED') {
+      const failureReason = pawapayData.failureReason
+      const errorMessage = failureReason?.failureMessage || 
+                          failureReason?.failureCode || 
+                          'Payment was rejected by PawaPay'
+      
+      console.error('[PawaPay] ❌ Payment rejected:', {
+        status: pawapayData.status,
+        failureReason: failureReason,
+        errorMessage: errorMessage
+      })
+      
+      await Payment.findByIdAndUpdate(payment._id, { 
+        status: 'failed',
+        depositId: finalDepositId
+      })
+      
+      return res.status(400).json({
+        error: 'Payment rejected',
+        paymentId: payment._id,
+        depositId: finalDepositId,
+        status: 'failed',
+        pawapayStatus: pawapayData.status,
+        failureReason: failureReason,
+        message: errorMessage
+      })
+    }
     
     // PawaPay doesn't have a hosted Payment Page like Stripe
     // The /deposits endpoint creates a payment that sends a prompt directly to user's phone
