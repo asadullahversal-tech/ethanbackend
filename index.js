@@ -283,7 +283,7 @@ app.post('/api/cv', auth, async (req, res) => {
 })
 
 // PawaPay API configuration - PRODUCTION
-const PAWAPAY_API_TOKEN =  "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNTUzNjA5LCJpYXQiOjE3NjcwMjA4MDksInBtIjoiREFGLFBBRiIsImp0aSI6ImJjZDEwNjViLWI2N2EtNGZlMi04OTBmLTQ0NjI5ZTRlZTAyMiJ9.VjBkfAQilr332UntoyyK_3IRvyWwqdQ1f3W7jJJ91bauSyvA3V7X5VBVqDK8fvZYX9Byggwh2Pkqk7Q8EyKipg"
+const PAWAPAY_API_TOKEN =  "eyJraWQiOiIxIiwiYWxnIjoiRVMyNTYifQ.eyJ0dCI6IkFBVCIsInN1YiI6IjE4NzUiLCJtYXYiOiIxIiwiZXhwIjoyMDgyNzA3NjEwLCJpYXQiOjE3NjcxNzQ4MTAsInBtIjoiREFGLFBBRiIsImp0aSI6IjZjOGRjOWRjLTQxZjMtNGZlYi1iN2IyLWVkNWFhZTYzMThlMSJ9.rMLwpnSCDIIgHu-p_oMV-LYxGb7WLDiKbEkrwO7YLwFgHqrey5nBF3kuQ0cwArlIRhD5-kFkjJzmUd1OexGQtw"
 const PAWAPAY_API_URL = process.env.PAWAPAY_API_URL || "https://api.pawapay.io/v2" // PRODUCTION API v2
 
 // Map frontend provider names to PawaPay provider codes
