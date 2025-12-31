@@ -361,9 +361,6 @@ app.post('/api/payments/create', auth, async (req, res) => {
                            plan === 'advanced' ? 'CV Advanced Plan' :
                            'CV Payment'
     
-    // Get callback URL for webhooks
-    const callbackUrl = `${req.protocol}://${req.get('host')}/api/payments/callback`
-    
     // Normalize phone number if provided (optional for Payment Page, user can enter on PawaPay page)
     let normalizedPhone = ''
     let pawapayProvider = 'VODACOM_MPESA_COD' // Default provider
@@ -378,18 +375,18 @@ app.post('/api/payments/create', auth, async (req, res) => {
     
     // PawaPay Payment Page API payload
     // Note: payer is required even for Payment Page flow
-    // If phone/provider not provided, user will enter on PawaPay page
+    // callbackUrl is configured in PawaPay Dashboard, not sent in API request
     const pawapayPayload = {
       depositId: depositId,
       amount: amount.toString(),
       currency: finalCurrency,
       clientReferenceId: `CV-${plan}-${payment._id}`,
       customerMessage: customerMessage.substring(0, 22),
-      returnUrl: returnUrl, // Where to redirect user after payment
-      callbackUrl: callbackUrl // Where PawaPay sends webhook notifications
+      returnUrl: returnUrl // Where to redirect user after payment
+      // callbackUrl is configured in PawaPay Dashboard, not here
     }
     
-    // Add payer if phone number is provided (optional for Payment Page)
+    // Add payer - required parameter
     if (normalizedPhone && normalizedPhone.length >= 9) {
       pawapayPayload.payer = {
         type: 'MMO',
@@ -411,8 +408,8 @@ app.post('/api/payments/create', auth, async (req, res) => {
       url: `${PAWAPAY_API_URL}/deposits`,
       method: 'POST',
       payload: JSON.stringify(pawapayPayload, null, 2),
-      returnUrl: returnUrl,
-      callbackUrl: callbackUrl
+      returnUrl: returnUrl
+      // Note: callbackUrl is configured in PawaPay Dashboard
     })
     
     // Call PawaPay API to create payment with Payment Page flow
