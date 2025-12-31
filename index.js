@@ -456,26 +456,14 @@ app.post('/api/payments/create', auth, async (req, res) => {
     console.log('[PawaPay] Deposit created:', {
       depositId: pawapayData.depositId || depositId,
       status: pawapayData.status,
-      redirectUrl: pawapayData.redirectUrl,
-      url: pawapayData.url,
+      nextStep: pawapayData.nextStep,
       fullResponse: JSON.stringify(pawapayData, null, 2)
     })
     
     const finalDepositId = pawapayData.depositId || depositId
     
-    // Check if PawaPay returned a redirectUrl (Payment Page flow)
-    // If not, construct payment page URL or use direct payment flow
-    let redirectUrl = pawapayData.redirectUrl || pawapayData.url
-    
-    // If no redirectUrl in response, construct Payment Page URL
-    // Format: https://pay.pawapay.io/{depositId} or similar
-    if (!redirectUrl && returnUrl) {
-      // Try constructing payment page URL
-      // PawaPay Payment Page might be at: https://pay.pawapay.io/pay/{depositId}
-      redirectUrl = `https://pay.pawapay.io/pay/${finalDepositId}`
-      console.log('[PawaPay] Constructed payment page URL:', redirectUrl)
-    }
-    
+    // PawaPay doesn't have a hosted Payment Page like Stripe
+    // The /deposits endpoint creates a payment that sends a prompt directly to user's phone
     // Update payment with deposit ID
     const initialStatus = pawapayData.status === 'ACCEPTED' ? 'processing' : 
                          pawapayData.status === 'FAILED' ? 'failed' : 'pending'
@@ -486,28 +474,19 @@ app.post('/api/payments/create', auth, async (req, res) => {
       reference: finalDepositId
     })
 
-    // If we have a redirectUrl, return it for frontend redirect
-    if (redirectUrl) {
-      console.log('[PawaPay] ✅ Payment created. Redirect user to:', redirectUrl)
-      return res.json({
-        paymentId: payment._id,
-        depositId: finalDepositId,
-        redirectUrl: redirectUrl,
-        status: initialStatus,
-        message: 'Redirecting to payment page...'
-      })
-    } else {
-      // No redirectUrl - use direct payment flow (user receives prompt on phone)
-      console.log('[PawaPay] ✅ Payment initiated. User should receive prompt on phone.')
-      return res.json({
-        paymentId: payment._id,
-        depositId: finalDepositId,
-        status: initialStatus,
-        message: pawapayData.status === 'ACCEPTED' 
-          ? 'Payment initiated. Please check your mobile phone for an authorization prompt.'
-          : 'Payment request received. Status: ' + pawapayData.status
-      })
-    }
+    // Return payment info - frontend will poll for status
+    // User receives prompt on their phone (no redirect needed)
+    console.log('[PawaPay] ✅ Payment initiated. User should receive prompt on phone:', normalizedPhone || 'phone from payer object')
+    
+    return res.json({
+      paymentId: payment._id,
+      depositId: finalDepositId,
+      status: initialStatus,
+      pawapayStatus: pawapayData.status,
+      message: pawapayData.status === 'ACCEPTED' 
+        ? 'Payment initiated. Please check your mobile phone for an authorization prompt (USSD or SMS).'
+        : 'Payment request received. Status: ' + pawapayData.status
+    })
   } catch (err) {
     console.error('[Payment] Error:', err)
     return res.status(500).json({ error: 'Payment creation failed', message: err.message })
