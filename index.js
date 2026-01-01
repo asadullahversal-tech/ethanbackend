@@ -328,9 +328,24 @@ app.post('/api/payments/create', auth, async (req, res) => {
     const depositId = randomUUID()
     
     // Determine currency and country from amount/plan
-    // For COD (Congo), use CDF, otherwise USD
+    // For COD (Congo): All providers (Vodacom, Airtel, Orange) support both CDF and USD
+    // If currency is explicitly requested as USD, use USD; otherwise default to CDF for COD
     const isCOD = country?.toLowerCase().includes('congo') || country?.toLowerCase().includes('rdc') || country?.toLowerCase().includes('cod')
-    const finalCurrency = isCOD ? 'CDF' : (currency || 'USD')
+    
+    // For COD: If currency is explicitly USD, use USD (all COD providers support USD)
+    // Otherwise, for COD use CDF, for other countries use USD
+    const finalCurrency = (isCOD && currency?.toUpperCase() === 'USD')
+      ? 'USD'
+      : (isCOD ? 'CDF' : (currency || 'USD'))
+    
+    console.log('[Payment] Currency determination:', {
+      provider,
+      country,
+      requestedCurrency: currency,
+      isCOD,
+      finalCurrency,
+      note: 'All COD providers (Vodacom, Airtel, Orange) support both CDF and USD'
+    })
     
     // Validate amount - must be positive number
     if (isNaN(amount) || amount <= 0) {
@@ -384,13 +399,15 @@ app.post('/api/payments/create', auth, async (req, res) => {
     
     // PawaPay API payload
     // Note: returnUrl and callbackUrl are configured in PawaPay Dashboard, not sent in API request
+    // Amount should be a number (not string) to match PawaPay API format
     const pawapayPayload = {
       depositId: depositId,
-      amount: amount.toString(),
+      amount: Number(amount), // Send as number, not string (matches curl example)
       currency: finalCurrency,
       clientReferenceId: `CV-${plan}-${payment._id}`,
       customerMessage: customerMessage.substring(0, 22)
       // returnUrl and callbackUrl are configured in PawaPay Dashboard
+      // metadata is optional, not included in our payload
     }
     
     // Add payer - required parameter
